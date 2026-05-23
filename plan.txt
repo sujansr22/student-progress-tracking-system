@@ -1,0 +1,231 @@
+  The 6-Phase Plan
+
+  ---
+  PHASE 1 — Fix Security Holes (Do This First, This Week)
+
+  Nothing else matters until these are fixed. Schools won't trust you with children's data if these are live.
+
+  1. Kill the token leak immediately
+
+  In app/core/auth.py, remove all 4 print statements. They dump raw JWT tokens and user objects to server logs — anyone with log access can steal sessions.
+
+  2. Rotate your SECRET_KEY and protect .env
+
+  Your current key e97c882a98e040... is compromised the moment your repo is pushed anywhere. Steps:
+  - Generate a new key: python -c "import secrets; print(secrets.token_hex(32))"
+  - Create .gitignore at project root with .env in it
+  - Create .env.example with placeholder values only (safe to commit)
+  - Never commit the real .env again
+
+  3. Add CORS middleware
+
+  main.py has no CORS config. Any website can call your API right now. Add:
+  from fastapi.middleware.cors import CORSMiddleware
+  app.add_middleware(
+      CORSMiddleware,
+      allow_origins=["https://your-frontend-domain.com"],  # never "*" in production
+      allow_credentials=True,
+      allow_methods=["GET", "POST", "PUT", "DELETE"],
+      allow_headers=["Authorization", "Content-Type"],
+  )
+
+  4. Replace print with structured logging
+
+  Replace every print() in the project with Python's logging module. Never log tokens, passwords, or PII.
+
+  5. Fix the UUID bug in analytics
+
+  analytics_routes.py:13 — student_id: int should be student_id: UUID. This crashes at runtime for any analytics call.
+
+  6. Extend rate limiting
+
+  Currently only /auth has rate limits. Add limits to student creation, survey submission, and all write endpoints.
+
+  ---
+  PHASE 2 — Data Protection & Compliance (Week 2)
+
+  Schools deal with minors. This is legally required, not optional.
+
+  1. Encrypt sensitive fields at rest
+
+  health_notes in the Student model is plain-text medical data. Any database breach exposes it directly. Use sqlalchemy-utils with EncryptedType for:
+  - health_notes
+  - Any future fields containing medical, behavioral, or personal data
+
+  2. Add a proper secrets manager
+
+  For production, never use .env files on the server. Use:
+  - Railway / Render: Built-in environment variable secrets UI
+  - AWS: Secrets Manager or SSM Parameter Store
+  - Self-hosted: HashiCorp Vault
+
+  3. Add data export + deletion (GDPR/DPDP compliance)
+
+  India's DPDP Act (2023) and schools internationally require:
+  - GET /students/{id}/export — full data export as JSON/PDF
+  - A real delete path that removes all PII when legally required (not just soft-delete)
+  - Document your data retention policy
+
+  4. Enforce HTTPS only
+
+  Add HTTPS redirect middleware — HTTP connections to your API should auto-redirect to HTTPS. This prevents credentials from traveling unencrypted.
+
+  ---
+  PHASE 3 — Backend Completion (Weeks 3–4)
+
+  Close the gaps that make the system incomplete.
+
+  1. Add refresh token system
+
+  Currently a 60-minute access token is all you have. When it expires, the user is logged out. You need:
+  - Short-lived access token (15 min)
+  - Long-lived refresh token (7 days), stored in httpOnly cookie
+  - POST /auth/refresh endpoint to get a new access token
+  - Token rotation on each refresh (old refresh token invalidated)
+
+  2. Add email verification + password reset
+
+  No school admin will trust a system where accounts are created without email verification. You need:
+  - Email verification on registration (send link, confirm before allowing login)
+  - POST /auth/forgot-password → send reset link
+  - POST /auth/reset-password → validate token, set new password
+  Use fastapi-mail + any SMTP provider (SendGrid free tier works)
+
+  3. Enforce subscriptions everywhere
+
+  The Subscription model exists but it only gates ClassInstructorMap creation. Add a dependency function:
+  def require_active_subscription(current_user, db):
+      # check institution's subscription is active and not expired
+      # raise 402 Payment Required if not
+  Inject this into every route that creates data.
+
+  4. Write a test suite
+
+  Before you talk to any school, you need tests. Minimum:
+  - Auth: register, login, token expiry, invalid credentials
+  - Multi-tenancy: School A cannot see School B's students
+  - Analytics: INSUFFICIENT_DATA fires correctly
+  - Soft delete: deleted student cannot be retrieved
+
+  Use pytest + httpx + a separate test PostgreSQL database.
+
+  5. Add API versioning
+
+  Change all routes from /students to /api/v1/students. This lets you make breaking changes later without breaking schools already integrated with you.
+
+  ---
+  PHASE 4 — Build the Frontend (Weeks 5–8)
+
+  Right now you have zero UI. Schools need something they can log into and use.
+
+  Tech stack recommendation: React + Vite + TailwindCSS + React Query
+
+  Build in this order (most important screens first):
+
+  1. Login page — JWT auth, token storage in memory (not localStorage)
+  2. SCHOOL_ADMIN dashboard — student count, high-risk count, attendance summary
+  3. Student list — paginated, searchable, filterable by class
+  4. Student detail page — profile + attendance chart + survey history + progress score
+  5. Attendance marking — instructor marks daily attendance for their class
+  6. Survey submission — 8-question form for instructor/student wellness survey
+  7. Analytics view — progress level indicator, trend over months
+  8. User management — SCHOOL_ADMIN creates instructors, assigns to classes
+  9. SUPER_ADMIN panel — all institutions, subscription management
+
+  Security rule for the frontend:
+  - Store JWT in memory only (not localStorage — XSS can steal it)
+  - Store refresh token in httpOnly cookie (JavaScript cannot read it)
+  - Auto-logout on token expiry
+
+  ---
+  PHASE 5 — Production Infrastructure (Weeks 9–10)
+
+  This is what separates a demo from a product schools can depend on.
+
+  1. Choose a deployment platform
+
+  For a solo founder getting first customers, start with Railway or Render (not AWS — too complex early on). Both support:
+  - PostgreSQL managed database
+  - Environment variable secrets (not .env files)
+  - Automatic SSL/HTTPS
+  - Docker deploys
+
+  2. Set up CI/CD
+
+  Use GitHub Actions:
+  - On every push: run tests, fail if any test fails
+  - On merge to main: auto-deploy to production
+  - Block deploys if tests fail
+
+  3. Add database backups
+
+  Set up automated daily PostgreSQL backups. Railway and Render do this automatically on paid plans. Student data that is lost cannot be recovered — schools will sue.
+
+  4. Add monitoring and alerting
+
+  Use Sentry (free tier) for:
+  - Error tracking (know when something breaks before the school calls you)
+  - Performance monitoring
+
+  Use UptimeRobot (free) to alert you if your server goes down.
+
+  5. Add structured logging
+
+  Replace all print() with a proper logging pipeline. Log format:
+  {"timestamp": "...", "level": "INFO", "user_id": 42, "action": "student.create", "institution_id": 1}
+  Never log emails, names, health data, or tokens.
+
+  ---
+  PHASE 6 — SaaS Commercial Layer (Weeks 11–14)
+
+  This is how you actually make money.
+
+  1. Stripe integration
+
+  - Monthly/annual subscription plans per institution
+  - POST /billing/create-checkout → Stripe hosted checkout
+  - Stripe webhook → update Subscription table on payment success/failure
+  - Grace period of 7 days after payment failure before locking access
+
+  2. School onboarding flow
+
+  When a school signs up, they should be able to self-serve:
+  1. Register institution
+  2. Set up academic year
+  3. Create classes
+  4. Create admin account
+  5. Invite instructors via email
+
+  Without self-serve onboarding, you are the bottleneck for every customer.
+
+  3. Institution admin dashboard
+
+  A dedicated dashboard showing the school owner:
+  - Total students
+  - Active subscriptions
+  - Usage this month
+  - Student risk distribution
+
+  4. Email notifications
+
+  Automated alerts schools actually care about:
+  - Weekly summary of at-risk students to school admin
+  - Monthly progress report per student (PDF, emailable to parents)
+  - Subscription expiry reminder (7 days, 3 days, expired)
+
+  ---
+  Summary: In What Order to Work
+
+  Week 1   → Phase 1: Fix security holes (non-negotiable)
+  Week 2   → Phase 2: Data protection, encryption, compliance
+  Weeks 3-4 → Phase 3: Backend completion (refresh tokens, email, tests)
+  Weeks 5-8 → Phase 4: Build the frontend
+  Weeks 9-10 → Phase 5: Production infrastructure + deployment
+  Weeks 11-14 → Phase 6: Billing, onboarding, notifications
+
+  Do not skip ahead. The most common mistake is jumping to frontend while the backend has the token leak still live. Fix Phase 1 today — it takes 2 hours and eliminates the most damaging
+  vulnerabilities.
+
+
+
+  ---
